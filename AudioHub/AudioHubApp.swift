@@ -10,29 +10,18 @@ import SwiftData
 
 @main
 struct AudioHubApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            File.self,
-			Metadata.self,
-			Settings.self
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
-
     var body: some Scene {
         WindowGroup {
-			RootView()
+			  AppContainerView()
         }
-        .modelContainer(sharedModelContainer)
+		  .modelContainer(ModelContainer.shared)
     }
 }
 
-#Preview {
-	RootView()
+class Settings: ObservableObject {
+	static let shared = Settings()
+
+	@AppStorage("url") var url: URL?
+	@AppStorage("bookmarkData") var bookmarkData: Data?
+	@AppStorage("lastRefresh") var lastRefreshDate: String?
 }
