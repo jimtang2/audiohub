@@ -8,6 +8,7 @@
 import AVFoundation
 import SwiftData
 import SwiftUI
+import CryptoKit
 
 func isFirstLaunch() -> Bool {
 	return Settings.shared.url == nil
@@ -82,19 +83,15 @@ func canUseBookmarkData() throws -> Bool {
 	return true
 }
 
-func getEnumeratorResourceKeys() -> [URLResourceKey] {
-	return [
-		.isDirectoryKey,
-		.nameKey,
-		.totalFileSizeKey,
-		.contentModificationDateKey
-	]
-}
-
 func getEnumerator(for url: URL) -> FileManager.DirectoryEnumerator? {
 	return FileManager.default.enumerator(
 		at: url,
-		includingPropertiesForKeys: getEnumeratorResourceKeys(),
+		includingPropertiesForKeys: [
+			.isDirectoryKey,
+			.nameKey,
+			.totalFileSizeKey,
+			.contentModificationDateKey
+		],
 		options: [
 			.skipsHiddenFiles,
 			.producesRelativePathURLs
@@ -105,87 +102,139 @@ func getEnumerator(for url: URL) -> FileManager.DirectoryEnumerator? {
 	)
 }
 
-@MainActor
-func fetchAudiobooks(dataStore: DataStore) throws {
-	if !canAccessURL() {
-		throw NSError(domain: "cannot access url", code: 0, userInfo: nil)
-	}
-
-	guard let url = Settings.shared.url else {
+func fetchAudiobooks(dataStore: DataStore, task: Binding<Task<Void, Never>?>, completion: @escaping () async -> Void) throws {
+	guard let baseURL = Settings.shared.url else {
 		throw NSError(domain: "cannot read url", code: 0, userInfo: nil)
 	}
 
-	Task {
-		let needsStopAccessingSecurity = url.startAccessingSecurityScopedResource()
+	task.wrappedValue?.cancel()
+
+	task.wrappedValue = Task {
+		let needsStopAccessingSecurity = baseURL.startAccessingSecurityScopedResource()
 		defer {
 			if needsStopAccessingSecurity {
-				url.stopAccessingSecurityScopedResource()
+				baseURL.stopAccessingSecurityScopedResource()
 			}
 		}
 
-		guard let enumerator = getEnumerator(for: url) else {
-			throw NSError(domain: "cannot create enumerator", code: 0, userInfo: nil)
+		guard let enumerator = getEnumerator(for: baseURL) else {
+			return
 		}
 
-		var directoryMap: [String:Audiobook] = [:]
-		var insertMap: [Audiobook:Bool] = [:]
+		var audiobooksMap: [String:Audiobook] = [:]
+		var insertedAudiobooks: [Audiobook:Bool] = [:]
 
-		for case let u as URL in enumerator {
-			let enumURL = u.isFileURL ? u : url.appendingPathComponent(u.relativePath)
-			let resourceValues = try? enumURL.resourceValues(forKeys: Set(getEnumeratorResourceKeys()))
+		for case let enumURL as URL in enumerator {
+			var url: URL
 
-			if resourceValues?.isDirectory ?? false {
-				let audiobook = Audiobook(url: enumURL)
-				directoryMap[enumURL.standardized.path] = audiobook
-				insertMap[audiobook] = false
+			if enumURL.isFileURL {
+				url = enumURL
+			} else {
+				url = baseURL.appendingPathComponent(enumURL.relativePath)
+			}
+
+			let resourceValues = try? url.resourceValues(forKeys: [
+				.isDirectoryKey,
+				.nameKey,
+				.totalFileSizeKey,
+				.contentModificationDateKey
+			])
+
+			guard let isDir = resourceValues?.isDirectory else {
 				continue
 			}
 
-			if !["m4a", "m4b", "mp3", "gif", "jpg", "jpeg", "png"].contains(enumURL.pathExtension) {
+			var audiobook: Audiobook
+
+			if isDir {
+				audiobook = Audiobook(url: url)
+				audiobooksMap[url.standardized.path] = audiobook
+				insertedAudiobooks[audiobook] = false
 				continue
 			}
-			let data = (
-				url.appendingPathComponent(u.relativePath),
-				resourceValues?.totalFileSize ?? 0,
-				resourceValues?.contentModificationDate ?? Date()
-			)
 
-			let path = enumURL.deletingLastPathComponent().standardized.path
-			guard let audiobook = directoryMap[path] else {
-				print("audiobook not found in directoryMap for \(u.relativePath)")
-				return
+			guard let audiobook = audiobooksMap[url.deletingLastPathComponent().standardized.path] else {
+				print("did not create audiobook for \(enumURL.relativePath)")
+				continue
 			}
-			guard let isInserted = insertMap[audiobook] else {
-				print("insert state not found in insertMap for \(u.relativePath)")
-				return
+
+			guard let isAudiobookInserted = insertedAudiobooks[audiobook] else {
+				print("did not mark audiobook insertion state for \(enumURL.relativePath)")
+				continue
 			}
-			if !isInserted {
+
+			let fileExt = url.pathExtension
+			var isMediaFile: Bool
+
+			switch fileExt {
+				case "m4a", "m4b", "mp3":
+					isMediaFile = true
+					break
+				case "gif", "jpg", "jpeg", "png":
+					isMediaFile = false
+					break
+				default:
+					continue
+			}
+
+			guard let size = resourceValues?.totalFileSize else {
+				continue
+			}
+
+			guard let mod = resourceValues?.contentModificationDate else {
+				continue
+			}
+
+			if !isAudiobookInserted {
 				do {
 					try await dataStore.insertAudiobook(audiobook: audiobook)
+					insertedAudiobooks[audiobook] = true
 				} catch {
 					print("insert audiobook error: \(error)")
 					continue
 				}
-				insertMap[audiobook] = true
 			}
-			let file = File(
-				url: data.0,
-				size: data.1,
-				mod: data.2
-			)
-			file.audiobook = audiobook
-			await fetchMetadata(from: file)
 
-			if audiobook.files == nil {
-				audiobook.files = []
+			let file = File(url: url, size: size, mod: mod)
+			file.audiobook = audiobook
+
+			if isMediaFile {
+				await fetchMetadata(from: file)
+			} else {
+				await fetchData(from: file)
 			}
-			audiobook.files?.append(file)
+
+			audiobook.files.append(file)
 
 			do {
 				try await dataStore.insertFile(file: file)
 			} catch {
 				print("insert file error: \(error)")
 				continue
+			}
+
+			if file.mod > audiobook.mod {
+				audiobook.mod = file.mod
+			}
+
+			if audiobook.title == nil && file.title != nil {
+				audiobook.title = file.title
+			}
+
+			if audiobook.album == nil && file.album != nil {
+				audiobook.album = file.album
+			}
+
+			if audiobook.author == nil && file.author != nil {
+				audiobook.author = file.author
+			}
+
+			if audiobook.artist == nil && file.artist != nil {
+				audiobook.artist = file.artist
+			}
+
+			if audiobook.artwork == nil && file.artwork != nil {
+				audiobook.artwork = file.artwork
 			}
 
 			do {
@@ -195,16 +244,17 @@ func fetchAudiobooks(dataStore: DataStore) throws {
 				continue
 			}
 		}
+		await completion()
 	}
 }
 
 func fetchMetadata(from file: File) async {
 	let asset = AVURLAsset(url: file.url)
 	var metadata: [AVMetadataItem] = []
+
 	do {
 		metadata = try await asset.load(.metadata)
 	} catch {
-		print("Util: cannot load metadata: \(error)")
 		return
 	}
 
@@ -216,40 +266,52 @@ func fetchMetadata(from file: File) async {
 	}
 
 	for item in metadata {
-		guard let key = item.commonKey?.rawValue else { continue }
+		guard let key = item.commonKey?.rawValue else {
+			continue
+		}
 		do {
 			switch key {
 				case AVMetadataKey.commonKeyTitle.rawValue:
 					file.title = try await item.load(.stringValue)
 				case AVMetadataKey.commonKeyArtist.rawValue:
 					file.artist = try await item.load(.stringValue)
+				case AVMetadataKey.commonKeyAuthor.rawValue:
+					file.author = try await item.load(.stringValue)
 				case AVMetadataKey.commonKeyAlbumName.rawValue:
 					file.album = try await item.load(.stringValue)
 				case AVMetadataKey.commonKeyArtwork.rawValue:
-					file.cover = try await item.load(.dataValue)
+					file.artwork = try await item.load(.dataValue)
 				default:
 					break
 			}
 		} catch {
-			print("Util: cannot load asset metadata: \(error)")
 			continue
 		}
 	}
 }
 
-func relativeDateString(from date: String?) -> String {
-	let formatter = DateFormatter()
-	formatter.dateFormat = "yyyy-MM-dd HH:mm:ss Z" // Matches Date.description format
-	guard let dateString = date, let date = formatter.date(from: dateString) else {
-		return "Never Updated"
+func fetchData(from file: File) async {
+	guard let data = try? Data(contentsOf: file.url) else {
+		return
 	}
+	file.data = data
+}
 
-	let timeInterval = Date().timeIntervalSince(date)
-	if timeInterval < 60 {
-		return "Just Now"
-	}
+func hashURLPath(_ url: URL) -> String {
+	let path = url.path
+	let inputData = Data(path.utf8)
+	let hash = SHA256.hash(data: inputData)
+	return hash.compactMap { String(format: "%02x", $0) }.joined()
+}
 
-	let relativeFormatter = RelativeDateTimeFormatter()
-	relativeFormatter.unitsStyle = .full
-	return "Updated \(relativeFormatter.localizedString(for: date, relativeTo: Date()))"
+func writeData(_ data: Data, toFileNamed fileName: String) throws {
+	let url = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+		.appendingPathComponent(fileName)
+	try data.write(to: url)
+}
+
+func readData(fromFileNamed fileName: String) throws -> Data {
+	let url = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: false)
+		.appendingPathComponent(fileName)
+	return try Data(contentsOf: url)
 }

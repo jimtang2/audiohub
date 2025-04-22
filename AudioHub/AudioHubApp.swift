@@ -12,7 +12,7 @@ import SwiftData
 struct AudioHubApp: App {
     var body: some Scene {
         WindowGroup {
-			  AppContainerView()
+			  AppView()
         }
 		  .modelContainer(ModelContainer.shared)
     }
@@ -20,8 +20,13 @@ struct AudioHubApp: App {
 
 class Settings: ObservableObject {
 	static let shared = Settings()
+	static let WATCH_APP_ID: String = "1541434437"
 
 	@AppStorage("url") var url: URL?
 	@AppStorage("bookmarkData") var bookmarkData: Data?
-	@AppStorage("lastRefresh") var lastRefreshDate: String?
+	@AppStorage("lastRefresh") var lastUpdated: String?
+	@AppStorage("sortValue") var sortValue: String = "Added"
+	@AppStorage("autoSync") var autoSync: Bool = true
+	@AppStorage("useiCloud") var useiCloud: Bool = true
+
 }

@@ -1,4 +1,11 @@
 //
+//  Audiobook.swift
+//  AudioHub
+//
+//  Created by Jimmy Tang on 20/4/2025.
+//
+
+//
 //  Models.swift
 //  AudioHub
 //
@@ -9,30 +16,31 @@ import Foundation
 import SwiftData
 
 @Model
-final class File: Hashable {
+final class Audiobook: Hashable, Identifiable {
 	@Attribute(.unique)
 	var id: String
 	var url: URL
-	var name: String
-	var size: Int
-	var mod: Date
 	var title: String?
 	var artist: String?
+	var author: String?
 	var album: String?
-	var duration: Double = 0 // seconds
-	var cover: Data?
-	@Relationship(inverse: \Audiobook.files)
-	var audiobook: Audiobook?
+	var artwork: Data?
+	var added: Date
+	var mod: Date
+	var lastScanned: Date?
+	@Relationship
+	var files: [File]
 
-	init(url: URL, size: Int, mod: Date) {
+	init(url: URL) {
 		self.url = url
 		self.id = url.standardized.absoluteString
-		self.name = url.lastPathComponent
-		self.size = size
-		self.mod = mod
+		self.added = Date()
+		self.mod = Date.distantPast
+		self.files = []
 	}
 
 	func hash(into hasher: inout Hasher) {
 		hasher.combine(url)
 	}
 }
+
