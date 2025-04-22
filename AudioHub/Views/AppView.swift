@@ -106,7 +106,7 @@ struct AppView: View {
 			.searchable(
 				text: $searchText,
 				placement: .automatic,
-				prompt: "Search audiobooks"
+				prompt: "Search"
 			)
 			.toolbar(content: toolbarContent)
 		}

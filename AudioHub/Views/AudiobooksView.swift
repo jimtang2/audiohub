@@ -20,7 +20,7 @@ struct AudiobooksView: View {
 
 	var refresh: () -> Void
 
-	@State private var columns = Array(repeating: GridItem(.flexible()), count: 2)
+	@State private var columns = Array(repeating: GridItem(.flexible()), count: Int(floor(UIScreen.main.bounds.width / 160)))
 
 	@Query(sort: \Audiobook.mod, order: .reverse, animation: .default)
 	private var audiobooks: [Audiobook]
