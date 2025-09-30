@@ -1,6 +1,7 @@
 # AudioHub
 
-![Screenshot](https://github.com/jimtang2/audiohub/blob/main/screenshot.png)
+[Screenshot](https://github.com/jimtang2/audiohub/blob/main/screenshot.PNG?raw=true)
+
 
 # TODO
 
